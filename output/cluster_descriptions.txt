@@ -1,8 +1,0 @@
-Cluster 0: Recent – 365 müşteri (Ø R=49g, F=9.5, M=89,151)
-Cluster 1: Hibernating – 270 müşteri (Ø R=299g, F=7.5, M=62,373)
-Cluster 2: At Risk – 105 müşteri (Ø R=241g, F=32.4, M=310,802)
-Cluster 3: Champions-A – 72 müşteri (Ø R=71g, F=65.8, M=652,782)
-Cluster 4: Champions-B – 10 müşteri (Ø R=80g, F=134.4, M=1,330,934)
-Cluster 5: Others – 419 müşteri (Ø R=166g, F=7.9, M=69,619)
-Cluster 6: Loyal – 222 müşteri (Ø R=62g, F=31.2, M=290,770)
-Cluster 7: Champions-C – 5 müşteri (Ø R=30g, F=289.4, M=2,793,603)
