@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""
-Customer Insights – Presentation Pack (v5)
-──────────────────────────────────────────
-Creates PNG files in output/plots/ and, if coordinates exist,
-an interactive HTML map in output/map/.
-
-Charts (filenames) ─────────────────────────────────────
-01_region_heatmap.png     Region × Product heat-map
-02_channel_stack.png      Online vs Offline stacked bar
-03_pareto.png             80/20 revenue concentration
-04_rfm_3d.png             RFM 3-D K-Means scatter
-05_month_ts.png           Monthly revenue & coupon line/area
-06_treemap.png            Product-family treemap
-   ↳ fallback → 06_treemap_fallback.png (bar)
-07_sales_map.html         Interactive bubble map  (HTML)
-   ↳ fallback → 07_region_bar.png        (bar)
-08_gender_coupon.png      Coupon usage by gender
-09_coupon_status.png      Coupon Status distribution (pie/bar)
-"""
 
 # ── imports ───────────────────────────────────────────
 import os, numpy as np, pandas as pd, matplotlib.pyplot as plt, matplotlib
@@ -129,48 +110,93 @@ try:
 except Exception as e:
     print(f"[skip] RFM 3-D → {e}")
 
-# ── 5 Monthly revenue & coupon line ──────────────────
+# ── 5 Monthly revenue (line) & coupon revenue (bar) ───────────────
 try:
-    rev_month  = df.groupby("Month_Year")["Total_Spend"].sum()
-    coup_month = (df[df["Coupon_Code"].notna()]
-                    .groupby("Month_Year")["Total_Spend"].sum())
+    # Toplam ciro (tüm satışlar)
+    rev_month = df.groupby("Month_Year")["Total_Spend"].sum()
+
+    # Kupon ciro (Coupon_Status == "Used")
+    coup_month = (df[df["Coupon_Status"].eq("Used")]
+                    .groupby("Month_Year")["Total_Spend"]
+                    .sum())
+
+    # 1️⃣ Dizide "NaT" yazılı etiketi veya gerçek NaT'i temizle
+    for s in (rev_month, coup_month):
+        s.drop(labels=["NaT"], errors="ignore", inplace=True)     # metin olarak "NaT"
+        s.dropna(inplace=True)                                    # gerçek NaT/NaN
+
     fig, ax1 = plt.subplots(figsize=(10, 5))
-    rev_month.plot(marker="o", ax=ax1, label="Total Revenue")
+
+    # Toplam ciro: line
+    rev_month.plot(marker="o",
+                   color="steelblue",
+                   ax=ax1,
+                   label="Total Revenue")
     ax1.set_ylabel("Revenue ($)")
+
+    # Kupon ciro: bar
     ax2 = ax1.twinx()
-    coup_month.plot(marker="s", linestyle="--",
-                    color="green", ax=ax2, label="Coupon Revenue")
+    ax2.bar(coup_month.index,
+            coup_month.values,
+            color="seagreen",
+            alpha=0.6,
+            label="Coupon Revenue (Used)")
     ax2.set_ylabel("Coupon Revenue ($)")
+
     ax1.set_title("Monthly Revenue & Coupon Revenue")
-    ax1.legend(loc="upper left"); ax2.legend(loc="upper right")
+    ax1.legend(loc="upper left")
+    ax2.legend(loc="upper right")
     plt.xticks(rotation=45)
+
     save_fig("05_month_ts.png")
 except Exception as e:
     print(f"[skip] Monthly TS → {e}")
 
-# ── 6 Treemap (with fallback) ─────────────────────────
-try:
-    fam_col = next(c for c in ["Product_Family", "Product_Category", "Category"]
-                   if c in df.columns)
-    fam = (df.groupby(fam_col)["Total_Spend"]
-             .sum().sort_values(ascending=False))
-    if len(fam) >= 2 and fam.sum() > 0:
-        labels = [f"{k}\n{v/1_000:.1f} k$" for k, v in fam.items()]
-        plt.figure(figsize=(12, 7))
-        squarify.plot(sizes=fam.values, label=labels, alpha=0.85)
-        plt.axis("off"); plt.title("Product-Family Revenue Share (Treemap)")
-        save_fig("06_treemap.png")
-    else:
-        raise ValueError("One category or zero values – bar fallback.")
-except Exception as e:
-    print(f"[fallback] Treemap → {e}")
-    try:
-        fam.plot(kind="bar", figsize=(7, 4), color="steelblue")
+# ── 6 Treemap (Plotly) + otomatik bar fallback ────────────────────
+import plotly.express as px
+import os
+
+def treemap_product_family(df, output_dir=MAP_DIR):
+    fam = (df.groupby('Product_Category', as_index=False)['Total_Spend']
+             .sum()
+             .sort_values('Total_Spend', ascending=False))
+
+    # Fallback koşulu
+    if len(fam) < 2 or fam['Total_Spend'].sum() == 0:
+        fam.set_index('Product_Category')['Total_Spend'] \
+           .plot(kind='bar', figsize=(7, 4), color='steelblue')
         plt.ylabel("Revenue ($)")
         plt.title("Product Revenue by Category (fallback)")
         save_fig("06_treemap_fallback.png")
-    except Exception as e2:
-        print(f"[skip] Treemap fallback → {e2}")
+        plt.close()
+        print("[info] Treemap yerine bar grafiği kaydedildi → 06_treemap_fallback.png")
+        return
+
+    # Plotly treemap
+    fig = px.treemap(
+        fam,
+        path=['Product_Category'],
+        values='Total_Spend',
+        title='Product Family Revenue Share'
+    )
+
+    html_path = os.path.join(output_dir, '06_treemap.html')
+    fig.write_html(html_path)
+
+    # (İsteğe bağlı) statik PNG – kaleido kuruluysa
+    try:
+        fig.write_image(os.path.join(output_dir, '06_treemap.png'))
+    except Exception:
+        pass
+
+    print(f"[ok] Treemap kaydedildi → {html_path}")
+
+# ➤ Ana akışta doğrudan çağırın:
+try:
+    treemap_product_family(df)
+except Exception as e:
+    print(f"[skip] Treemap → {e}")
+
 
 # ── 7 Bubble map (with fallback bar) ──────────────────
 map_done = False
@@ -214,16 +240,35 @@ if not map_done:
 try:
     if "Gender" not in df.columns:
         raise KeyError("Gender column missing.")
-    flag = df["Coupon_Code"].notna().rename({True:"With Coupon",
-                                             False:"No Coupon"})
-    gtab = pd.crosstab(df["Gender"], flag)
-    gtab.plot(kind="bar", stacked=True, figsize=(8, 4))
+    if "Coupon_Status" not in df.columns:
+        raise KeyError("Coupon_Status column missing.")
+
+    # 1️⃣ Kupon durumunu normalize et
+    status = (df["Coupon_Status"]
+                .fillna("Not Used")            # eksikler → Not Used
+                .replace({"": "Not Used"}))    # boş string varsa
+
+    # 'Used', 'Clicked', diğer → 'Not Used'
+    status = status.where(status.isin(["Used", "Clicked"]),
+                          other="Not Used")
+
+    gtab = pd.crosstab(df["Gender"], status)
+
+    gtab = gtab[["Not Used", "Clicked", "Used"]]
+
+    gtab.plot(kind="bar",
+              stacked=True,
+              figsize=(8, 4))
+
     plt.ylabel("Order Count")
     plt.title("Coupon Usage by Gender")
-    plt.legend(["No Coupon", "With Coupon"])
+    plt.legend(["Not Used", "Clicked", "Used"])
+    plt.tight_layout()
     save_fig("08_gender_coupon.png")
+
 except Exception as e:
     print(f"[skip] Gender-Coupon → {e}")
+
 
 # ── 9 Coupon Status distribution ──────────────────────
 try:
@@ -431,5 +476,171 @@ try:
 
 except Exception as e:
     print(f"[skip] Weekday channel → {e}")
+
+# ── 15  Top-20 products – Online vs Offline revenue ──
+try:
+    need = {"Product_Description", "Online_Spend", "Offline_Spend"}
+    missing = need - set(df.columns)
+    if missing:
+        raise KeyError(f"Missing columns: {', '.join(missing)}")
+
+    # ➊  Ürün bazında toplam gelirler
+    prod_rev = (df.groupby("Product_Description")[["Online_Spend","Offline_Spend"]]
+                  .sum()
+                  .assign(Total=lambda x: x["Online_Spend"] + x["Offline_Spend"])
+                  .sort_values("Total", ascending=False)
+                  .head(20)
+                  .iloc[::-1])      # barh için ters çevir → en yüksek üstte
+
+    # ➋  Grafik
+    ax = prod_rev[["Online_Spend","Offline_Spend"]].plot(
+            kind="barh", figsize=(10, 6), color=["steelblue","darkorange"])
+    plt.xlabel("Revenue (₺)")
+    plt.title("Top-20 Products – Online vs Offline Revenue")
+    plt.legend(["Online","Offline"])
+    plt.tight_layout()
+    save_fig("15_top_products_online_offline.png")
+    print("[info] 15_top_products_online_offline.png created.")
+
+except Exception as e:
+    print(f"[skip] Top products chart → {e}")
+
+# ── 16  Top-5 products per Location (facet grid) ─────
+try:
+    cols_needed = {"Location", "Product_Description", "Quantity"}
+    missing = cols_needed - set(df.columns)
+    if missing:
+        raise KeyError(f"Missing columns: {', '.join(missing)}")
+
+    # ➊  Konum listesi
+    locs = df["Location"].dropna().unique()
+    n_loc = len(locs)
+    if n_loc == 0:
+        raise ValueError("No locations found.")
+
+    # ➋  Izgara boyutu (en fazla 3 sütun)
+    ncols = 3
+    nrows = int(np.ceil(n_loc / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(ncols*5, nrows*4),
+                             squeeze=False)
+
+    for idx, loc in enumerate(sorted(locs)):
+        r, c = divmod(idx, ncols)
+        ax = axes[r][c]
+
+        # En çok satılan 5 ürün
+        top5 = (df[df["Location"] == loc]
+                  .groupby("Product_Description")["Quantity"]
+                  .sum()
+                  .sort_values(ascending=False)
+                  .head(5)
+                  .iloc[::-1])          # barh için ters çevir
+
+        top5.plot(kind="barh", ax=ax, color="steelblue")
+        ax.set_title(f"{loc} – Top-5 Products")
+        ax.set_xlabel("Units Sold")
+        ax.set_ylabel("")
+
+    # Boş alt grafik varsa temizle
+    for j in range(idx+1, nrows*ncols):
+        r, c = divmod(j, ncols)
+        fig.delaxes(axes[r][c])
+
+    fig.suptitle("Top-5 Products per Location", fontsize=14, y=1.02)
+    plt.tight_layout()
+    save_fig("16_top5_products_per_location.png")
+    print("[info] 16_top5_products_per_location.png created.")
+
+except Exception as e:
+    print(f"[skip] Top-5 products per location → {e}")
+
+# ── 17  Top-20 products for each Gender ───────────────
+# ── 17  Top-20 products per Gender – Treemap & HTML ──
+try:
+    need = {"Gender", "Product_Description", "Quantity"}
+    miss = need - set(df.columns)
+    if miss:
+        raise KeyError(f"Missing columns: {', '.join(miss)}")
+
+    import plotly.express as px
+    import matplotlib.pyplot as plt
+    import squarify
+
+    # ---------------- Prepare data ----------------
+    top20_df = (df.groupby(["Gender", "Product_Description"])["Quantity"]
+                  .sum()
+                  .sort_values(ascending=False)
+                  .groupby(level=0)
+                  .head(20)                         # top-20 within each gender
+                  .reset_index())
+
+    # 1) Matplotlib PNG treemap (all genders in one figure)
+    genders = top20_df["Gender"].unique()
+    ncols = 2
+    nrows = int(np.ceil(len(genders) / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(ncols*6, nrows*5), squeeze=False)
+
+    for idx, g in enumerate(sorted(genders)):
+        r, c = divmod(idx, ncols)
+        ax = axes[r][c]
+        sub = top20_df[top20_df["Gender"] == g]
+        sizes = sub["Quantity"].values
+        labels = [f"{p}\n{sub['Quantity'].iloc[i]}" for i, p in enumerate(sub["Product_Description"])]
+        squarify.plot(sizes=sizes, label=labels, ax=ax, alpha=.8)
+        ax.axis("off")
+        ax.set_title(f"{g} – Top-20 Products")
+
+    # boş eksenleri temizle
+    for j in range(len(genders), nrows*ncols):
+        r, c = divmod(j, ncols); fig.delaxes(axes[r][c])
+
+    plt.tight_layout()
+    save_fig("17_top20_products_gender_treemap.png")
+    print("[info] 17_top20_products_gender_treemap.png created.")
+
+    # 2) Plotly HTML treemap (interactive)
+    fig_html = px.treemap(top20_df,
+                          path=["Gender", "Product_Description"],
+                          values="Quantity",
+                          color="Gender",
+                          title="Top-20 Products per Gender – Interactive Treemap")
+    fig_html.write_html(f"{MAP_DIR}/17_top_20_treemap_gender.html")
+    print("[info] Interactive treemap saved → output/treemap_gender.html")
+
+except ImportError:
+    print("[skip] Plotly not installed – install plotly to enable interactive treemap.")
+except Exception as e:
+    print(f"[skip] Gender treemap → {e}")
+
+# ── 18  Top-10 products by total revenue ──────────────
+try:
+    need_cols = {"Product_Description", "Total_Spend"}
+    absent = need_cols - set(df.columns)
+    if absent:
+        raise KeyError(f"Missing columns: {', '.join(absent)}")
+
+    # En yüksek gelire göre ilk 10 ürün
+    top10_rev = (df.groupby("Product_Description")["Total_Spend"]
+                   .sum()
+                   .sort_values(ascending=False)
+                   .head(10)
+                   .iloc[::-1])    # barh için ters → en yüksek yukarı
+
+    # Grafik
+    plt.figure(figsize=(8, 5))
+    top10_rev.plot(kind="barh", color="forestgreen")
+    plt.xlabel("Revenue ($)")
+    plt.title("Top-10 Products by Revenue")
+    for idx, val in enumerate(top10_rev.values):
+        plt.text(val, idx, f"{val:,.0f}", va="center", ha="left")
+    plt.tight_layout()
+    save_fig("18_top10_products_revenue.png")
+    print("[info] 18_top10_products_revenue.png created.")
+
+except Exception as e:
+    print(f"[skip] Top-10 revenue chart → {e}")
+
 
 print("✔ All available charts saved to output/plots/")

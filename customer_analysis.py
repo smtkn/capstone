@@ -1,184 +1,164 @@
-
 #!/usr/bin/env python3
-"""
-Customer Type Analysis Pipeline
---------------------------------
-Reads data from csv/file.csv and generates:
-    1. Region-Product heatmap
-    2. Online vs Offline spend stacked bar per region
-    3. Pareto chart of customer spend
-    4. RFM calculation and KMeans / Hierarchical / DBSCAN clustering with 3D scatter
-    5. Monthly sales & coupon usage time series
-    6. Product family treemap
-    7. (Optional) Region-based sales bubble map if coordinates available
 
-All outputs are stored under ./output/
-"""
-import os
-import pandas as pd
-import numpy as np
-from datetime import datetime
-import matplotlib.pyplot as plt
-from matplotlib.ticker import PercentFormatter
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+import os, numpy as np, pandas as pd, matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa
+import matplotlib
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans, DBSCAN
+from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN
 from sklearn.metrics import silhouette_score
-from sklearn.cluster import AgglomerativeClustering
-import plotly.express as px  # for treemap and optional map
+from collections import defaultdict
 
-DATA_PATH = 'csv/file.csv'
-OUTPUT_DIR = 'output'
+DATA_PATH, OUTPUT_DIR = "csv/file.csv", "output"
+N_CLUSTERS = 8
 
-def ensure_output():
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
+# ────────────────────────────────────────────────────────────
+def ensure_output(): os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def load_data():
     df = pd.read_csv(DATA_PATH)
-    # Standardize column names
-    df.columns = df.columns.str.strip()
-    # Parse dates
-    if 'Transaction_Date' in df.columns:
-        df['Transaction_Date'] = pd.to_datetime(df['Transaction_Date'])
-    elif 'Date' in df.columns:
-        df['Transaction_Date'] = pd.to_datetime(df['Date'])
-    else:
-        raise ValueError('Date column not found')
+    date_col = "Transaction_Date" if "Transaction_Date" in df.columns else "Date"
+    df["Transaction_Date"] = pd.to_datetime(df[date_col])
     return df
 
-def region_product_heatmap(df):
-    pivot = df.pivot_table(values='Quantity', index='Location',
-                           columns='Product_Category', aggfunc='sum', fill_value=0)
-    plt.figure(figsize=(12, 8))
-    plt.imshow(pivot, aspect='auto')
-    plt.xticks(range(len(pivot.columns)), pivot.columns, rotation=90)
-    plt.yticks(range(len(pivot.index)), pivot.index)
-    plt.colorbar(label='Quantity')
-    plt.title('Region vs Product Category – Quantity Sold')
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, 'region_product_heatmap.png'))
-    plt.close()
-
-def sales_channel_stacked(df):
-    channel = df.groupby('Location')[['Online_Spend', 'Offline_Spend']].sum()
-    locations = channel.index
-    online = channel['Online_Spend']
-    offline = channel['Offline_Spend']
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.bar(locations, offline, label='Offline')
-    ax.bar(locations, online, bottom=offline, label='Online')
-    ax.set_ylabel('Total Spend')
-    ax.set_title('Online vs Offline Spend by Region')
-    ax.legend()
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, 'online_offline_stacked.png'))
-    plt.close()
-
-def pareto_chart(df):
-    df['Total_Spend'] = df['Online_Spend'] + df['Offline_Spend']
-    customer_spend = df.groupby('CustomerID')['Total_Spend'].sum().sort_values(ascending=False)
-    cumperc = customer_spend.cumsum() / customer_spend.sum() * 100
-    fig, ax1 = plt.subplots(figsize=(12, 6))
-    ax1.bar(range(len(customer_spend)), customer_spend.values, label='Customer Spend')
-    ax1.set_xlabel('Customers (ranked)')
-    ax1.set_ylabel('Spend')
-    ax2 = ax1.twinx()
-    ax2.plot(range(len(cumperc)), cumperc.values, color='red', linestyle='--', marker='o', label='Cumulative %')
-    ax2.yaxis.set_major_formatter(PercentFormatter())
-    ax2.axhline(80, color='grey', linestyle='dotted')
-    ax2.set_ylabel('Cumulative Percentage')
-    ax1.set_title('Pareto Chart – Customer Spend Distribution')
-    fig.legend(loc='upper right')
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, 'pareto_customer_spend.png'))
-    plt.close()
-
-def compute_rfm(df, snapshot_date=None):
-    if snapshot_date is None:
-        snapshot_date = df['Transaction_Date'].max() + pd.Timedelta(days=1)
-    rfm = df.groupby('CustomerID').agg({
-        'Transaction_Date': lambda x: (snapshot_date - x.max()).days,
-        'Transaction_ID': 'nunique',
-        'Total_Spend': 'sum'
-    })
-    rfm.columns = ['Recency', 'Frequency', 'Monetary']
+# ────────────────── R F M ───────────────────────────────────
+def rfm_table(df):
+    snap = df["Transaction_Date"].max() + pd.Timedelta(days=1)
+    rfm = df.groupby("CustomerID").agg(
+        Recency   = ("Transaction_Date", lambda x: (snap - x.max()).days),
+        Frequency = ("Transaction_ID",  "nunique"),
+        Monetary  = ("Total_Spend",     "sum"),
+    )
+    rfm["R_Score"] = pd.qcut(rfm["Recency"], 5, labels=[5,4,3,2,1]).astype(int)
+    rfm["F_Score"] = pd.qcut(rfm["Frequency"].rank(method="first"), 5,
+                             labels=[1,2,3,4,5]).astype(int)
+    rfm["M_Score"] = pd.qcut(rfm["Monetary"], 5, labels=[1,2,3,4,5]).astype(int)
     return rfm
 
-def clustering_models(rfm):
-    scaler = StandardScaler()
-    X = scaler.fit_transform(rfm)
-    # KMeans
-    kmeans = KMeans(n_clusters=4, random_state=42)
-    rfm['KMeans'] = kmeans.fit_predict(X)
-    # Agglomerative
-    hier = AgglomerativeClustering(n_clusters=4)
-    rfm['Hierarchical'] = hier.fit_predict(X)
-    # DBSCAN (auto eps estimation might be needed)
-    db = DBSCAN(eps=0.8, min_samples=5)
-    rfm['DBSCAN'] = db.fit_predict(X)
-    # Save cluster assignments
-    rfm.to_csv(os.path.join(OUTPUT_DIR, 'rfm_clusters.csv'))
-    return rfm
+SEG_MAP = {
+    "High-Value Loyalists":  lambda r: r.R_Score==5 and r.F_Score==5,
+    "Loyal":                 lambda r: r.F_Score==5 and r.R_Score>=4,
+    "Potential Loyalists":   lambda r: r.R_Score==5 and r.F_Score==4,
+    "Recent Customers":      lambda r: r.R_Score==5 and r.F_Score<=3,
+    "Promising":             lambda r: r.R_Score==4 and r.F_Score>=3,
+    "Need Attention":        lambda r: r.R_Score==3 and r.F_Score==3,
+    "At Risk":               lambda r: r.R_Score<=2 and r.F_Score>=3,
+    "Hibernating":           lambda r: r.R_Score<=2 and r.F_Score<=2,
+}
+def rfm_segment(row):
+    for name, rule in SEG_MAP.items():
+        if rule(row): return name
+    return "Others"
 
-def rfm_3d_scatter(rfm):
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    scatter = ax.scatter(rfm['Recency'], rfm['Frequency'], rfm['Monetary'],
-                         c=rfm['KMeans'], s=50, alpha=0.6)
-    ax.set_xlabel('Recency')
-    ax.set_ylabel('Frequency')
-    ax.set_zlabel('Monetary')
-    ax.set_title('RFM Segmentation – KMeans Clusters')
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, 'rfm_3d_scatter.png'))
-    plt.close()
+def describe_cluster(grp):
+    c = len(grp)
+    R,F,M = grp[["Recency","Frequency","Monetary"]].mean()
+    return f"{c} müşteri (Ø R={R:.0f}g, F={F:.1f}, M={M:,.0f})"
 
-def monthly_sales_coupon(df):
-    df['Month_Year'] = df['Transaction_Date'].dt.to_period('M')
-    monthly = df.groupby('Month_Year').agg({
-        'Total_Spend': 'sum',
-        'Coupon_Status': lambda x: (x == 'Used').sum()
-    }).reset_index()
-    # Plot
-    fig, ax1 = plt.subplots(figsize=(12, 6))
-    ax1.plot(monthly['Month_Year'].astype(str), monthly['Total_Spend'], marker='o')
-    ax1.set_xlabel('Month')
-    ax1.set_ylabel('Total Sales')
-    ax1.set_title('Monthly Sales & Coupon Usage')
-    ax2 = ax1.twinx()
-    ax2.bar(monthly['Month_Year'].astype(str), monthly['Coupon_Status'], alpha=0.3, label='Coupons Used')
-    ax2.set_ylabel('Coupons Used')
-    fig.legend(loc='upper left')
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, 'monthly_sales_coupon.png'))
-    plt.close()
+# yinelenen segment isimlerini zenginleştir
+def refine_duplicate_labels(rfm, col, base_map):
+    seg_map = defaultdict(list)
+    for cid, desc in base_map.items():
+        seg = desc.split(" – ")[0]
+        seg_map[seg].append(cid)
+    new = base_map.copy()
+    for seg, cids in seg_map.items():
+        if len(cids) <= 1: continue
+        ranked = sorted(cids, key=lambda c: rfm[rfm[col]==c]["Monetary"].mean(), reverse=True)
+        suffix = ["High Value","Mid Value","Low Value","Very Low"][:len(ranked)]
+        for cid, suf in zip(ranked, suffix):
+            new[cid] = base_map[cid].replace(seg, f"{seg} – {suf}", 1)
+    return new
 
-def treemap_product_family(df):
-    fam = df.groupby('Product_Category').agg({'Total_Spend': 'sum'}).reset_index()
-    fig = px.treemap(fam, path=['Product_Category'], values='Total_Spend',
-                     title='Product Family Revenue Share')
-    fig.write_html(os.path.join(OUTPUT_DIR, 'product_family_treemap.html'))
+# genel çıktı
+def run_clustering(rfm, algo, labels):
+    col = f"{algo}_Cluster"
+    rfm[col] = labels
+    base = {cid: f"{grp['Segment'].value_counts().idxmax()} – {describe_cluster(grp)}"
+            for cid, grp in rfm.groupby(col)}
+    desc = refine_duplicate_labels(rfm, col, base)
+    rfm[f"{algo}_Desc"] = rfm[col].map(desc)
+    rfm.to_csv(f"{OUTPUT_DIR}/rfm_{algo.lower()}.csv", index=False)
+    with open(f"{OUTPUT_DIR}/cluster_descriptions_{algo.lower()}.txt","w",encoding="utf-8") as f:
+        for cid in sorted(desc): f.write(f"Cluster {cid}: {desc[cid]}\n")
+    return desc
 
+def scatter_3d(rfm, algo, col):
+    fig = plt.figure(figsize=(8,6))
+    ax = fig.add_subplot(111, projection="3d")
+    cmap = matplotlib.colormaps.get_cmap("tab10")
+    for cid, grp in rfm.groupby(col):
+        ax.scatter(grp.Recency, grp.Frequency, grp.Monetary,
+                   s=25, alpha=.7, color=cmap(int(cid)%10), label=f"C{cid}")
+    ax.set_xlabel("Recency"); ax.set_ylabel("Frequency"); ax.set_zlabel("Monetary")
+    ax.set_title(f"RFM – {algo} Clusters"); ax.legend()
+    plt.tight_layout(); plt.savefig(f"{OUTPUT_DIR}/rfm_3d_{algo.lower()}.png"); plt.close()
+
+# ────────────────── TOP-N PRODUCTS PER SEGMENT ──────────────────
+def top_products_by_segment(df, rfm, top_n=10):
+    seg_map = rfm["Segment"]
+    merged  = df.merge(seg_map, left_on="CustomerID", right_index=True)
+
+    for seg, grp in merged.groupby("Segment"):
+        # ► adet bazlı TOP-N
+        top = (grp["Product_Description"]
+                 .value_counts()
+                 .head(top_n)
+                 .sort_values())          # h-bar ters sıralama için
+
+        plt.figure(figsize=(9, 1.2*top_n + 2))
+        top.plot(kind="barh", color="steelblue", zorder=3)
+        plt.grid(axis="x", linestyle="--", alpha=.4, zorder=0)
+        plt.title(f"Top {top_n} Products – {seg}")
+        plt.xlabel("Satış Adedi"); plt.ylabel("")
+        plt.tight_layout()
+
+        fname = f"{OUTPUT_DIR}/top{top_n}_{seg.replace(' ','_').lower()}.png"
+        plt.savefig(fname, dpi=120)
+        plt.close()
+        print(" »", fname)
+
+
+# ─────────────────── MAIN ────────────────────
 def main():
     ensure_output()
     df = load_data()
-    # Ensure Total_Spend exists
-    if 'Total_Spend' not in df.columns:
-        df['Total_Spend'] = df['Online_Spend'] + df['Offline_Spend']
-    # Visualizations
-    region_product_heatmap(df)
-    sales_channel_stacked(df)
-    pareto_chart(df)
-    rfm = compute_rfm(df)
-    rfm = clustering_models(rfm)
-    rfm_3d_scatter(rfm)
-    monthly_sales_coupon(df)
-    treemap_product_family(df)
-    print('Analysis complete. Check the output folder for results.')
+    if "Total_Spend" not in df.columns:
+        df["Total_Spend"] = df["Online_Spend"] + df["Offline_Spend"]
 
-if __name__ == '__main__':
+    rfm = rfm_table(df)
+    rfm["Segment"] = rfm.apply(rfm_segment, axis=1)
+    X = StandardScaler().fit_transform(rfm[["Recency","Frequency","Monetary"]])
+
+    # K-Means
+    km = KMeans(n_clusters=N_CLUSTERS, random_state=42).fit(X)
+    print(f"KMeans silhouette: {silhouette_score(X, km.labels_):.3f}")
+    run_clustering(rfm, "KMeans", km.labels_); scatter_3d(rfm,"KMeans","KMeans_Cluster")
+
+    # Hierarchical
+    hier = AgglomerativeClustering(n_clusters=N_CLUSTERS, linkage="ward").fit(X)
+    print(f"Hierarchical silhouette: {silhouette_score(X, hier.labels_):.3f}")
+    run_clustering(rfm,"Hierarchical",hier.labels_); scatter_3d(rfm,"Hierarchical","Hierarchical_Cluster")
+
+    # DBSCAN – grid-search
+    best={"score":-1}
+    for eps in np.arange(0.3,3.05,0.1):
+        for ms in range(3,9):
+            lab = DBSCAN(eps=eps, min_samples=ms).fit_predict(X)
+            k=len(set(lab))-(-1 in lab); noise=(lab==-1).mean()
+            if k<3 or noise>0.4: continue
+            try: s=silhouette_score(X,lab)
+            except: continue
+            if s>best["score"]: best=dict(score=s,eps=eps,ms=ms,labels=lab)
+    if best["score"]>0:
+        print(f"DBSCAN → eps={best['eps']:.1f}, ms={best['ms']} | Silhouette={best['score']:.3f}")
+        run_clustering(rfm,"DBSCAN",best["labels"]); scatter_3d(rfm,"DBSCAN","DBSCAN_Cluster")
+    else:
+        print("DBSCAN anlamlı küme üretemedi; atlandı.")
+
+    # Top-N ürünler
+    top_products_by_segment(df, rfm, top_n=10)
+
+    print("✓ Analiz tamamlandı  »  output/")
+
+if __name__ == "__main__":
     main()
