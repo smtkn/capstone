@@ -642,5 +642,100 @@ try:
 except Exception as e:
     print(f"[skip] Top-10 revenue chart → {e}")
 
+# ── 19  USED coupons – distribution by weekday ───────
+try:
+    cols_needed = {"Coupon_Status", "Transaction_Date"}
+    miss = cols_needed - set(df.columns)
+    if miss:
+        raise KeyError(f"Missing columns: {', '.join(miss)}")
+
+    # ── 1) Coupon_Status'ı normalize et ───────────────
+    clean = (df["Coupon_Status"].astype(str).str.strip().str.lower())
+    synonyms = {"used":"Used", "applied":"Used",
+                "notused":"Not used","not used":"Not used","unused":"Not used",
+                "clicked":"Clicked","click":"Clicked"}
+    status = clean.map(lambda x: synonyms.get(x, x.title()))
+
+    # ── 2) Haftanın günleri (English order) ───────────
+    df["Weekday"] = pd.to_datetime(df["Transaction_Date"]).dt.day_name()
+    order = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+
+    used_counts = (df[status == "Used"]
+                     .groupby("Weekday")["Coupon_Status"]
+                     .count()
+                     .reindex(order, fill_value=0))
+
+    if used_counts.sum() == 0:
+        raise ValueError("No 'Used' coupon rows to plot.")
+
+    # ── 3) Grafik ─────────────────────────────────────
+    plt.figure(figsize=(8,4))
+    used_counts.plot(kind="bar", color="mediumseagreen")
+    plt.ylabel("Number of Used Coupons")
+    plt.title("Used Coupons by Weekday")
+    plt.xticks(rotation=15)
+    for idx,val in enumerate(used_counts.values):
+        plt.text(idx, val, str(val), ha="center", va="bottom")
+    plt.tight_layout()
+    save_fig("19_used_coupons_by_weekday.png")
+    print("[info] 19_used_coupons_by_weekday.png created.")
+
+except Exception as e:
+    print(f"[skip] Used coupon weekday chart → {e}")
+
+# ── 20  Unit price vs purchase volume (scatter) ───────
+try:
+    # ➊  Muhtemel fiyat sütun adları
+    price_candidates = ["Unit_Price", "Price", "UnitPrice", "Item_Price",
+                        "ItemPrice", "Product_Price"]
+    price_col = next((c for c in price_candidates if c in df.columns), None)
+
+    qty_col = "Quantity"
+    if qty_col not in df.columns:
+        raise KeyError("Quantity column missing.")
+
+    # ➋  Fiyat sütunu yoksa otomatik hesapla (Total_Spend / Quantity)
+    if price_col is None:
+        if "Total_Spend" in df.columns:
+            df["Auto_Unit_Price"] = df["Total_Spend"] / df[qty_col].replace(0, np.nan)
+            price_col = "Auto_Unit_Price"
+            print("[info] Unit price derived from Total_Spend ÷ Quantity.")
+        else:
+            raise KeyError("No explicit price column and Total_Spend missing.")
+
+    # ➌  Ürün bazında ortalama fiyat & toplam adet
+    prod_stats = (df.groupby("Product_Description")
+                    .agg(Avg_Price=(price_col, "mean"),
+                         Units_Sold=(qty_col, "sum"))
+                    .query("Avg_Price > 0 and Units_Sold > 0"))
+
+    if prod_stats.empty:
+        raise ValueError("No positive price/quantity data.")
+
+    # ➍  Scatter (log-log)
+    plt.figure(figsize=(8,5))
+    plt.scatter(prod_stats["Avg_Price"],
+                prod_stats["Units_Sold"],
+                alpha=0.6, color="indianred", edgecolors="k")
+    plt.xscale("log"); plt.yscale("log")
+    plt.xlabel("Average Unit Price (₺) [log]")
+    plt.ylabel("Units Sold [log]")
+    plt.title("Product Price vs Purchase Volume")
+
+    # En çok satan 5 ürünü etiketle
+    top5 = prod_stats.sort_values("Units_Sold", ascending=False).head(5)
+    for desc, row in top5.iterrows():
+        short = (desc[:15] + "…") if len(desc) > 15 else desc
+        plt.text(row["Avg_Price"], row["Units_Sold"], short,
+                 fontsize=8, ha="left", va="bottom")
+
+    plt.tight_layout()
+    save_fig("20_price_vs_sales.png")
+    print("[info] 20_price_vs_sales.png created.")
+
+except Exception as e:
+    print(f"[skip] Price vs sales → {e}")
+
+
 
 print("✔ All available charts saved to output/plots/")

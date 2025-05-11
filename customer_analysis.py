@@ -109,7 +109,7 @@ def top_products_by_segment(df, rfm, top_n=10):
         top.plot(kind="barh", color="steelblue", zorder=3)
         plt.grid(axis="x", linestyle="--", alpha=.4, zorder=0)
         plt.title(f"Top {top_n} Products – {seg}")
-        plt.xlabel("Satış Adedi"); plt.ylabel("")
+        plt.xlabel("Sales Unit"); plt.ylabel("")
         plt.tight_layout()
 
         fname = f"{OUTPUT_DIR}/top{top_n}_{seg.replace(' ','_').lower()}.png"
