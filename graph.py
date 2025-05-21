@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-
-# ── imports ───────────────────────────────────────────
 import os, numpy as np, pandas as pd, matplotlib.pyplot as plt, matplotlib
 from mpl_toolkits.mplot3d import Axes3D    # noqa
 from sklearn.preprocessing import StandardScaler

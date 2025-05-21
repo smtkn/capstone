@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import os, numpy as np, pandas as pd, matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa
 import matplotlib

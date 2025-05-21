@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# train_rfm_model.py  (v2.2 – import fix + extras)
-
 import os, joblib, pandas as pd, numpy as np
 from pathlib import Path
 from collections import Counter

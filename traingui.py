@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-RFM Segment Predictor – presentation-ready Tkinter GUI
-(autosenses model with 3 or 6 features)
-"""
 import os, datetime as dt, random, tkinter as tk, joblib, pandas as pd
 from tkinter import ttk, messagebox
 
